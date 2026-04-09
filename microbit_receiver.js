@@ -23,8 +23,10 @@ radio.onReceivedString(function (receivedString) {
     // Déduplication : ne transmettre que les transitions
     if (lastCmd[p] === receivedString) return
     lastCmd[p] = receivedString
+    // Protocole compact : "A" = joueur 1, "B" = joueur 2, puis le code, puis \n
+    let tag = p === 1 ? "A" : "B"
     writing = true
-    serial.writeLine("P" + p + ":" + receivedString)
+    serial.writeString(tag + receivedString + "\n")
     writing = false
 })
 

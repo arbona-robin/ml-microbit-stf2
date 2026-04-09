@@ -229,7 +229,13 @@ def serial_reader(ser, stop_event):
                 continue
             if "--debug" in sys.argv:
                 print(f"  {DIM}[raw] {line!r}  ({len(raw)}B){R}")
-            if line.startswith("p1:"):
+            # Protocole compact : "a0", "b2" etc. (joueur + code = 2 chars)
+            # Rétro-compat ancien format : "p1:xxx", "p2:xxx"
+            if len(line) == 2 and line[0] in ("a", "b"):
+                player = 1 if line[0] == "a" else 2
+                raw = line[1]
+                cmd_queue.put((player, translate(player, raw), raw))
+            elif line.startswith("p1:"):
                 raw = line[3:]
                 cmd_queue.put((1, translate(1, raw), raw))
             elif line.startswith("p2:"):
