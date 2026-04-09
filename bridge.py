@@ -10,13 +10,14 @@ Combos avec "+" : "up+z" appuie simultanément sur les deux touches.
 Mots-clés : définis dans MACROS (ex: "hadouken" → séquence de touches).
 """
 
-import glob
 import queue
 import sys
 import termios
 import threading
 import time
+from difflib import SequenceMatcher
 import serial
+import serial.tools.list_ports
 from pynput.keyboard import Key, Controller
 from macros import MACROS, MACRO_DELAY
 
@@ -34,6 +35,24 @@ SPECIAL_KEYS = {
 TAP_KEYS = {"z", "x", "l", "m"}
 
 TAP_DURATION = 0.05
+
+# Traduction code radio → action (nouveau protocole 1 caractère)
+PLAYER_CODES = {
+    1: {
+        "0": "none", "1": "left", "2": "right", "3": "up", "4": "down",
+        "z": "z", "x": "x", "!": "hadouken",
+    },
+    2: {
+        "0": "none", "1": "h", "2": "k", "3": "u", "4": "j",
+        "m": "m", "l": "l", "!": "hadouken",
+    },
+}
+
+# Ensemble de toutes les actions valides (pour rétro-compat et fuzzy matching)
+_ALL_ACTIONS = (
+    set(SPECIAL_KEYS) | TAP_KEYS | {"none"} | set(MACROS)
+    | {"h", "k", "u", "j", "m", "l"}
+)
 
 # ── Couleurs ANSI ────────────────────────────────────────────────────
 R = "\033[0m"
@@ -56,11 +75,10 @@ cmd_queue = queue.Queue()
 
 
 def find_microbit():
-    """Cherche le port série du micro:bit."""
-    for pattern in ["/dev/tty.usbmodem*", "/dev/cu.usbmodem*"]:
-        ports = glob.glob(pattern)
-        if ports:
-            return ports[0]
+    """Cherche le port série du micro:bit (par VID USB, ignore les ports fantômes)."""
+    for port in serial.tools.list_ports.comports():
+        if port.vid == 0x0D28:  # ARM/micro:bit vendor ID
+            return port.device
     return None
 
 
@@ -72,6 +90,32 @@ def resolve_key(name):
     if len(name) == 1:
         return name
     return None
+
+
+def fuzzy_match(text, candidates, threshold=0.6):
+    """Meilleur candidat par similarité (SequenceMatcher). None si sous le seuil."""
+    best, best_ratio = None, 0
+    for c in candidates:
+        r = SequenceMatcher(None, text, c).ratio()
+        if r > best_ratio:
+            best, best_ratio = c, r
+    return best if best_ratio >= threshold else None
+
+
+def translate(player, code):
+    """Traduit un code radio en action. Rétro-compatible avec l'ancien firmware."""
+    # Nouveau protocole (1 caractère)
+    action = PLAYER_CODES.get(player, {}).get(code)
+    if action:
+        return action
+    # Ancien protocole (nom complet déjà valide)
+    if code in _ALL_ACTIONS:
+        return code
+    # Fuzzy matching sur les corruptions résiduelles
+    match = fuzzy_match(code, _ALL_ACTIONS)
+    if match:
+        return match
+    return code
 
 
 def release_all(player):
@@ -113,7 +157,24 @@ def player_prefix(player):
     return f"{PLAYER_COLORS[player]}P{player}{R} "
 
 
-def handle(action, player):
+# Labels lisibles pour les codes radio
+CODE_LABELS = {
+    "0": "0:none", "1": "1:gauche", "2": "2:droite", "3": "3:haut", "4": "4:bas",
+    "!": "!:hadouken",
+}
+
+
+def fmt_action(action, raw):
+    """Affiche le code brut → action si traduction, sinon juste l'action."""
+    label = CODE_LABELS.get(raw)
+    if label:
+        return label
+    if raw != action:
+        return f"{raw}→{action}"
+    return action
+
+
+def handle(action, player, raw=""):
     prefix = player_prefix(player)
 
     # Macro (ex: hadouken)
@@ -122,13 +183,13 @@ def handle(action, player):
         if steps:
             release_all(player)
             do_macro(steps)
-            print(f"  {prefix}{YELLOW}>> {action}{R}")
+            print(f"  {prefix}{YELLOW}>> {fmt_action(action, raw)}{R}")
         return
 
     # Relâcher tout
     if action == "none":
         release_all(player)
-        print(f"  {prefix}{CYAN}-- relache{R}")
+        print(f"  {prefix}{CYAN}-- {fmt_action(action, raw)}{R}")
         return
 
     # Résoudre les touches (supporte les combos avec +)
@@ -137,7 +198,7 @@ def handle(action, player):
     keys = [k for k in keys if k is not None]
 
     if not keys:
-        print(f"  {prefix}{RED}?? {action}{R}")
+        print(f"  {prefix}{RED}?? {fmt_action(action, raw)}{R}")
         return
 
     is_tap = len(keys) > 1 or any(p.strip() in TAP_KEYS for p in parts) or not HOLD_MODE
@@ -145,14 +206,14 @@ def handle(action, player):
     if is_tap:
         release_all(player)
         tap(keys)
-        print(f"  {prefix}{GREEN}>> {action}{R}")
+        print(f"  {prefix}{GREEN}>> {fmt_action(action, raw)}{R}")
     else:
         if held_keys[player] == set(keys):
             return
         release_all(player)
         keyboard.press(keys[0])
         held_keys[player] = set(keys)
-        print(f"  {prefix}{BLUE}>> {action}{R}")
+        print(f"  {prefix}{BLUE}>> {fmt_action(action, raw)}{R}")
 
 
 # ── Thread de lecture série ──────────────────────────────────────────
@@ -169,9 +230,11 @@ def serial_reader(ser, stop_event):
             if "--debug" in sys.argv:
                 print(f"  {DIM}[raw] {line!r}  ({len(raw)}B){R}")
             if line.startswith("p1:"):
-                cmd_queue.put((1, line[3:]))
+                raw = line[3:]
+                cmd_queue.put((1, translate(1, raw), raw))
             elif line.startswith("p2:"):
-                cmd_queue.put((2, line[3:]))
+                raw = line[3:]
+                cmd_queue.put((2, translate(2, raw), raw))
         except (serial.SerialException, OSError):
             cmd_queue.put(None)
             return
@@ -238,11 +301,11 @@ try:
             reader_thread.start()
             continue
 
-        player, action = item
+        player, action, raw = item
         if player not in player_seen:
             player_seen.add(player)
             print(f"  {PLAYER_COLORS[player]}Joueur {player} détecté{R}")
-        handle(action, player)
+        handle(action, player, raw)
 
 except KeyboardInterrupt:
     print("\nArrêt.")

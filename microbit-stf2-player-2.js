@@ -1,29 +1,29 @@
 ml.onStart(ml.event.None, function () {
-  radio.sendString("none");
+  radio.sendString("0");
 });
 ml.onStart(ml.event.B, function () {
   radio.sendString("l");
 });
 ml.onStart(ml.event.Left, function () {
-  radio.sendString("h");
+  radio.sendString("1");
 });
 ml.onStart(ml.event.A, function () {
   radio.sendString("m");
 });
 ml.onStart(ml.event.Hadouken, function () {
-  radio.sendString("hadouken");
+  radio.sendString("!");
 });
 ml.onStart(ml.event.Unknown, function () {
-  radio.sendString("none");
+  radio.sendString("0");
 });
 ml.onStart(ml.event.Down, function () {
-  radio.sendString("j");
+  radio.sendString("4");
 });
 ml.onStart(ml.event.Right, function () {
-  radio.sendString("k");
+  radio.sendString("2");
 });
 ml.onStart(ml.event.Up, function () {
-  radio.sendString("u");
+  radio.sendString("3");
 });
 radio.setGroup(1);
 radio.setTransmitSerialNumber(true);

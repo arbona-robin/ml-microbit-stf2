@@ -9,6 +9,7 @@
 let players: { [key: number]: number } = {}
 let playerCount = 0
 let writing = false
+let lastCmd: { [key: number]: string } = {}
 
 radio.onReceivedString(function (receivedString) {
     if (writing) return   // évite le débordement du buffer TX série
@@ -18,8 +19,12 @@ radio.onReceivedString(function (receivedString) {
         playerCount += 1
         players[sn] = playerCount
     }
+    let p = players[sn]
+    // Déduplication : ne transmettre que les transitions
+    if (lastCmd[p] === receivedString) return
+    lastCmd[p] = receivedString
     writing = true
-    serial.writeLine("P" + players[sn] + ":" + receivedString)
+    serial.writeLine("P" + p + ":" + receivedString)
     writing = false
 })
 
