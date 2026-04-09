@@ -6,13 +6,13 @@ Transforme des micro:bit en manettes de jeu pour Street Fighter II en utilisant 
 graph TD
     P1["micro:bit P1<br/>accelero + modele ML"]
     P2["micro:bit P2<br/>accelero + modele ML"]
-    RX["micro:bit recepteur<br/>(USB serie vers PC)"]
-    BR["bridge.py<br/>simule les touches clavier"]
+    RX["micro:bit recepteur<br/>dedup + serie USB"]
+    BR["bridge.py<br/>traduction codes + clavier"]
     SF["Street Fighter II Turbo<br/>(navigateur web)"]
 
-    P1 -- radio --> RX
-    P2 -- radio --> RX
-    RX -- "serie 115200 baud" --> BR
+    P1 -- "radio (codes 1 char)" --> RX
+    P2 -- "radio (codes 1 char)" --> RX
+    RX -- "serie 115200 baud<br/>P1:1, P2:4..." --> BR
     BR -- "clavier emule (pynput)" --> SF
 ```
 
@@ -60,9 +60,9 @@ python bridge.py
 | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bridge.py`                    | Bridge serie → clavier. Lit le port USB et simule les touches                                                                                                                |
 | `macros.py`                    | Coups speciaux : toutes les macros de combos par personnage (voir liste ci-dessous)                                                                                          |
-| `microbit_receiver.js`         | Firmware du micro:bit recepteur (MakeCode). Recoit la radio et transmet en serie                                                                                             |
-| `microbit-stf2-player-1.js`    | Exemple de code emetteur joueur 1 (reference)                                                                                                                                |
-| `microbit-stf2-player-2.js`    | Exemple de code emetteur joueur 2 (reference)                                                                                                                                |
+| `microbit_receiver.js`         | Firmware du micro:bit recepteur (MakeCode). Recoit la radio, deduplique et transmet en serie                                                                                 |
+| `microbit-stf2-player-1.js`    | Code emetteur joueur 1 (codes 1 caractere)                                                                                                                                   |
+| `microbit-stf2-player-2.js`    | Code emetteur joueur 2 (codes 1 caractere)                                                                                                                                   |
 | `microbit-stf2-player-1-f.hex` | Firmware joueur 1 pret a flasher (code + modele ML + echantillons d'entrainement). Reimportable dans [CreateAI](https://createai.microbit.org/) pour voir/modifier le modele |
 | `microbit-stf2-player-2-f.hex` | Firmware joueur 2 pret a flasher (code + modele ML + echantillons d'entrainement). Reimportable dans [CreateAI](https://createai.microbit.org/) pour voir/modifier le modele |
 | `combo.png`                    | Liste des combos Street Fighter II                                                                                                                                           |
@@ -78,23 +78,42 @@ python bridge.py
 
 ### 1. Reconnaissance de gestes (micro:bit emetteur)
 
-Chaque micro:bit emetteur embarque un modele ML entraine sur [CreateAI](https://createai.microbit.org/). L'accelerometre detecte les mouvements et le modele classifie le geste en temps reel. Le resultat est envoye par radio :
+Chaque micro:bit emetteur embarque un modele ML entraine sur [CreateAI](https://createai.microbit.org/). L'accelerometre detecte les mouvements et le modele classifie le geste en temps reel. Le resultat est envoye par radio sous forme d'un **code a 1 caractere** pour minimiser l'utilisation du buffer serie :
+
+| Code | Signification |
+|------|---------------|
+| `0`  | repos (aucun geste) |
+| `1`  | gauche |
+| `2`  | droite |
+| `3`  | haut |
+| `4`  | bas |
+| `z`/`m` | poing (P1/P2) |
+| `x`/`l` | pied (P1/P2) |
+| `!`  | hadouken |
 
 ```
-Geste detecte → modele ML → radio.sendString("left")
+Geste detecte → modele ML → radio.sendString("1")
 ```
 
 ### 2. Reception et relais (micro:bit recepteur)
 
-Le micro:bit recepteur branche en USB recoit les messages radio des deux joueurs. Il identifie chaque joueur par son numero de serie et transmet sur le port serie :
+Le micro:bit recepteur branche en USB recoit les messages radio des deux joueurs. Il identifie chaque joueur par son numero de serie et transmet sur le port serie. Deux mecanismes evitent la saturation du buffer TX serie (~64 octets) :
+
+- **Flag `writing`** : ignore les messages radio recus pendant une ecriture serie
+- **Deduplication** : ne transmet que les transitions (si le joueur envoie `1` deux fois de suite, seul le premier est transmis)
 
 ```
-radio.onReceivedString → serial.writeLine("P1:left")
+radio.onReceivedString → serial.writeLine("P1:1")
 ```
 
 ### 3. Bridge Python (PC)
 
-`bridge.py` lit le port serie, decode les commandes et simule les touches clavier correspondantes avec `pynput`. Le jeu dans le navigateur recoit les inputs comme si c'etait un vrai clavier.
+`bridge.py` lit le port serie, traduit les codes radio en actions clavier et simule les touches avec `pynput`. Le micro:bit est detecte par son identifiant USB (VID `0x0D28`), ce qui evite les problemes de ports fantomes.
+
+Le bridge inclut :
+- **Table de traduction** (`PLAYER_CODES`) : convertit les codes 1 caractere en actions clavier par joueur
+- **Retro-compatibilite** : accepte aussi les anciens noms complets (`left`, `right`, `none`...)
+- **Fuzzy matching** : corrige les commandes legerement corrompues (ex: `lft` → `left`)
 
 ### Touches par defaut
 
@@ -102,7 +121,7 @@ radio.onReceivedString → serial.writeLine("P1:left")
 
 **Joueur 2** — `u`/`j`/`h`/`k` (directions) + `m` (poing) / `l` (pied)
 
-Les macros (coups speciaux) sont definies dans `macros.py` et executent automatiquement la sequence de touches du combo. Pour declencher un coup special, le micro:bit envoie le mot-cle par radio (ex: `radio.sendString("hadouken")`).
+Les macros (coups speciaux) sont definies dans `macros.py` et executent automatiquement la sequence de touches du combo. Pour declencher un coup special, le micro:bit envoie le code par radio (ex: `radio.sendString("!")` pour hadouken).
 
 ### Mots-cles de coups speciaux
 
